@@ -27,12 +27,8 @@ INTRO_TEXT = """\
 Transcribe audio files with word-level timestamps using WhisperX.
 
 WhisperX adds word-level timestamps to Whisper's transcriptions through phoneme-level
-alignment with a fine-tuned speech recognition model. It also supports speaker diarization.
+alignment with a fine-tuned speech recognition model. It also supports speaker diarisation.
 
-### Notes
-- The transcription process may take a while depending on the model size and audio length
-- For diarization to work, you may need to set the `HF_TOKEN` environment variable
-- For custom alignment models, provide the model name or path
 """
 
 class WhisperXManager:
@@ -705,7 +701,7 @@ def gradio_app():
 
             # Output
             transcript_output = gr.Textbox(
-                label="Transcript",
+                label="Transcript preview",
                 lines=20
             )
 
