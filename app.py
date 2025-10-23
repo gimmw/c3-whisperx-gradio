@@ -24,10 +24,11 @@ DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 INTRO_TEXT = """\
 # WhisperX Gradio Interface
 
-Transcribe audio files with word-level timestamps using WhisperX.
+Transcribe audio and video files using [WhisperX](https://github.com/m-bain/whisperX).
 
 WhisperX adds word-level timestamps to Whisper's transcriptions through phoneme-level
-alignment with a fine-tuned speech recognition model. It also supports speaker diarisation.
+alignment with a fine-tuned speech recognition model. 
+It also supports speaker diarisation.
 
 """
 
