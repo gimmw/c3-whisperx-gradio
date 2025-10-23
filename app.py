@@ -164,14 +164,15 @@ def transcribe_audio(
     output_dir = Path('whisperx_output')
     output_dir.mkdir(exist_ok=True)
     
+    timestamp = int(time.time())
     all_output_files = []
 
     for input_file in input_files:
 
       # Generate a unique timestamp for this run
 
-      timestamp = int(time.time())
-      file_prefix = f"transcript_{timestamp}"
+      file_name = os.path.splitext(os.path.basename(input_file))[0]
+      file_prefix = f"transcript_{file_name}.{timestamp}"
 
       try:
           # for video input file, extract as audio
