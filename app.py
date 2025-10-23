@@ -5,6 +5,7 @@ import torch
 import gradio as gr
 import whisperx
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -26,12 +27,8 @@ INTRO_TEXT = """\
 Transcribe audio files with word-level timestamps using WhisperX.
 
 WhisperX adds word-level timestamps to Whisper's transcriptions through phoneme-level
-alignment with a fine-tuned speech recognition model. It also supports speaker diarization.
+alignment with a fine-tuned speech recognition model. It also supports speaker diarisation.
 
-### Notes
-- The transcription process may take a while depending on the model size and audio length
-- For diarization to work, you may need to set the `HF_TOKEN` environment variable
-- For custom alignment models, provide the model name or path
 """
 
 class WhisperXManager:
@@ -106,7 +103,8 @@ def extract_audio_from_video(video_file, output_audio_file):
 def transcribe_audio(
     # Input file
     #audio_file,
-    input_file,
+    #input_file,
+    input_files,
 
     # Basic options
     model="large-v3",
@@ -161,311 +159,319 @@ def transcribe_audio(
     # Create a permanent output directory
     output_dir = Path('whisperx_output')
     output_dir.mkdir(exist_ok=True)
-
-    # Generate a unique timestamp for this run
-    import time
+    
     timestamp = int(time.time())
-    file_prefix = f"transcript_{timestamp}"
+    all_output_files = []
 
-    try:
-        # for video input file, extract as audio
-        if is_video_file(input_file):
-            audio_file = os.path.splitext(input_file)[0] + ".mp3"
-            extract_audio_from_video(input_file, audio_file)
-            file_path = audio_file
-        else:
-            audio_file = input_file
-            
-        # Handle both string paths and FileData objects
-        if isinstance(audio_file, dict) and 'path' in audio_file:
-            audio_path = audio_file['path']  # Extract path from FileData
-        else:
-            audio_path = audio_file  # Already a string path
+    for input_file in input_files:
 
-        # Get model manager
-        model_manager = MODEL_MANAGER.get_asr_model(model, device, compute_type)
+      # Generate a unique timestamp for this run
 
-        # Parse advanced options
-        if min_speakers:
-            min_speakers = int(min_speakers)
-        if max_speakers:
-            max_speakers = int(max_speakers)
+      file_name = os.path.splitext(os.path.basename(input_file))[0]
+      file_prefix = f"transcript_{file_name}.{timestamp}"
 
-        # Parse hotwords if provided
-        hotwords_list = None
-        if hotwords:
-            try:
-                hotwords_list = [hw.strip() for hw in hotwords.split(",")]
-            except:
-                print("Error parsing hotwords, using default")
-
-        # Create empty dict for HF token if diarization is enabled
-        hf_token = None  # Can be set via environment variable HF_TOKEN if needed
-
-        try:
-            # Step 1: Transcribe with Whisper
-            print("Transcribing audio...")
-
-            # FasterWhisperPipeline API has different parameters
-            # Only pass the parameters that are available in the current version
-            result = model_manager.transcribe(
-                audio_path,
-                language=language,
-                task=task,
-                batch_size=batch_size,
-                chunk_size=chunk_size
-            )
-
-            # Step 2: Perform alignment if enabled
-            if not no_align:
-                print("Aligning results...")
-
-                # Make sure we have a valid language code
-                detected_language = result.get("language", "en")  # Default to English if not detected
-                if language and language.strip():
-                    detected_language = language.strip()
-
-                print(f"Using language code: {detected_language} for alignment")
-
-                # First load the alignment model - don't pass model_name if it's empty
-                # This will make it use the default model for the detected language
-                if align_model and align_model.strip():
-                    alignment_model, align_metadata = whisperx.load_align_model(
-                        language_code=detected_language,
-                        device=device,
-                        model_name=align_model
-                    )
-                else:
-                    alignment_model, align_metadata = whisperx.load_align_model(
-                        language_code=detected_language,
-                        device=device
-                    )
-
-                # Then perform alignment
-                result = whisperx.align(
-                    result["segments"],
-                    alignment_model,
-                    align_metadata,
-                    audio_path,
-                    device,
-                    return_char_alignments=return_char_alignments,
-                    interpolate_method=interpolate_method
-                )
-
-            # Step 3: Perform diarization if enabled
-            if diarize:
-                print("Performing diarization...")
-                diarize_model = whisperx.diarize.DiarizationPipeline(
-                    device=device,
-                    use_auth_token=hf_token
-                )
-                diarize_segments = diarize_model(
-                    audio_path,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers
-                )
-                result = whisperx.assign_word_speakers(diarize_segments, result)
-
-            # Format and save results
-            print("Processing complete.")
-
-            # Save outputs in multiple formats
-            output_files = []
-
-            # 1. JSON format
-            json_path = output_dir / f"{file_prefix}.json"
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-            output_files.append(str(json_path))
-
-            # 2. Plain text format
-            txt_path = output_dir / f"{file_prefix}.txt"
-            with open(txt_path, "w", encoding="utf-8") as f:
-                oldspeaker = ''
-                for segment in result["segments"]:
-                    if diarize and "speaker" in segment:
-                        # if still the same speaker, just print segment
-                        if segment['speaker'] == oldspeaker:
-                            f.write(f"{segment['text'].strip()}\n")
-                            continue
-                        # if new speaker, print speaker label
-                        f.write("\n")
-                        f.write(f"[{segment['speaker']}]: {segment['text'].strip()}\n")
-                        oldspeaker = segment['speaker']
-                    else:
-                        f.write(f"{segment['text'].strip()}\n")
-            output_files.append(str(txt_path))
-
-            # 3. SRT format (subtitle)
-            srt_path = output_dir / f"{file_prefix}.srt"
-            with open(srt_path, "w", encoding="utf-8") as f:
-                for i, segment in enumerate(result["segments"], start=1):
-                    start_time = format_timestamp(segment["start"], always_include_hours=True, decimal_marker=",")
-                    end_time = format_timestamp(segment["end"], always_include_hours=True, decimal_marker=",")
-
-                    text = segment["text"].strip().replace("-->", "->")
-                    if diarize and "speaker" in segment:
-                        text = f"[{segment['speaker']}]: {text}"
-
-                    f.write(f"{i}\n{start_time} --> {end_time}\n{text}\n\n")
-            output_files.append(str(srt_path))
-
-            # 4. VTT format (web subtitle)
-            vtt_path = output_dir / f"{file_prefix}.vtt"
-            with open(vtt_path, "w", encoding="utf-8") as f:
-                f.write("WEBVTT\n\n")
-                for i, segment in enumerate(result["segments"], start=1):
-                    start_time = format_timestamp(segment["start"], always_include_hours=False, decimal_marker=".")
-                    end_time = format_timestamp(segment["end"], always_include_hours=False, decimal_marker=".")
-
-                    text = segment["text"].strip().replace("-->", "->")
-                    if diarize and "speaker" in segment:
-                        text = f"[{segment['speaker']}]: {text}"
-
-                    f.write(f"{start_time} --> {end_time}\n{text}\n\n")
-            output_files.append(str(vtt_path))
-
-            # 5. HTML
-            html_path = output_dir / f"{file_prefix}.html"
-            css = """
-              body {
-                color-scheme: light dark;
-                color: #ffffffde;
-                background-color: #242424;
-              }
+      try:
+          # for video input file, extract as audio
+          if is_video_file(input_file):
+              audio_file = os.path.splitext(input_file)[0] + ".mp3"
+              extract_audio_from_video(input_file, audio_file)
+              file_path = audio_file
+          else:
+              audio_file = input_file
               
-              span.timestamp {
-                font-family: monospace;
-              }
-              
-              div.segments {
-                width: 90%;
-              }
-              
-              p.segment {
-                display: flex;
-                align-items: center;
-                gap: 1rem;
-                text-align: left;
-              }
-              
-              .speaker.speakerid {
-                font-family: monospace;
-              }
-              
-              .speaker.SPEAKER_00 {
-                color: #59ffa1;
-              }
-              
-              .speaker.SPEAKER_01 {
-                color: #597aff;
-              }
-              
-              .speaker.SPEAKER_02 {
-                color: #f04f4f;
-              }
-              
-              .speaker.SPEAKER_03 {
-                color: #e29b16;
-              }
-              
-              .speaker.SPEAKER_04 {
-                color: #16c5e2;
-              }
-              
-              .speaker.SPEAKER_05 {
-                color: #8316e2;
-              }
-              
-              .speaker.SPEAKER_06 {
-                color: #e216af;;
-              }
-              
-              .speaker.SPEAKER_07 {
-                color: #16e29b;
-              }
-              
-              .speaker.SPEAKER_08 {
-                color: #3fe216;
-              }
-              
-              .speaker.SPEAKER_09 {
-                color: #9b16e2;
-              }
-              
-              .speaker.SPEAKER_10 {
-                color: #16bae2;
-              }
-              
-              .speaker.SPEAKER_11 {
-                color: #a9e216;
-              }
-              
-              .speaker.SPEAKER_12 {
-                color: #1676e2;
-              }
-              
-              .speaker.SPEAKER_13 {
-                color: #dcbeff;
-              }
-              
-              .speaker.SPEAKER_14 {
-                color: #aaffc3;
-              }
-              
-              .speaker.SPEAKER_15 {
-                color: #ffd8b1;
-              }
-              
-              .speaker.SPEAKER_16 {
-                color: #fabed4;
-              }
-              
-              .speaker.SPEAKER_17 {
-                color: #16e287;
-              }
-              
-              .speaker.SPEAKER_18 {
-                color: #16bae2;
-              }
-              
-              .speaker.SPEAKER_19 {
-                color: #a9a9a9;
-              }
-            """
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write("<html>\n")
-                f.write(f"\t<head>\t\t<style>{css}\t\t</style>\t</head>")
-                f.write(f"\t<body>\n\t\t<div class=\"segments\">")
-                oldspeaker = ''
-                for segment in result["segments"]:
+          # Handle both string paths and FileData objects
+          if isinstance(audio_file, dict) and 'path' in audio_file:
+              audio_path = audio_file['path']  # Extract path from FileData
+          else:
+              audio_path = audio_file  # Already a string path
 
-                    if diarize and "speaker" in segment:
-                        if segment['speaker'] != oldspeaker:
-                          f.write(f"\t\t\t<br /><p class=\"speaker speakerid\">{segment['speaker']}:</p>\n")
+          # Get model manager
+          model_manager = MODEL_MANAGER.get_asr_model(model, device, compute_type)
+
+          # Parse advanced options
+          if min_speakers:
+              min_speakers = int(min_speakers)
+          if max_speakers:
+              max_speakers = int(max_speakers)
+
+          # Parse hotwords if provided
+          hotwords_list = None
+          if hotwords:
+              try:
+                  hotwords_list = [hw.strip() for hw in hotwords.split(",")]
+              except:
+                  print("Error parsing hotwords, using default")
+
+          # Create empty dict for HF token if diarization is enabled
+          hf_token = None  # Can be set via environment variable HF_TOKEN if needed
+
+          try:
+              # Step 1: Transcribe with Whisper
+              print("Transcribing audio...")
+
+              # FasterWhisperPipeline API has different parameters
+              # Only pass the parameters that are available in the current version
+              result = model_manager.transcribe(
+                  audio_path,
+                  language=language,
+                  task=task,
+                  batch_size=batch_size,
+                  chunk_size=chunk_size
+              )
+
+              # Step 2: Perform alignment if enabled
+              if not no_align:
+                  print("Aligning results...")
+
+                  # Make sure we have a valid language code
+                  detected_language = result.get("language", "en")  # Default to English if not detected
+                  if language and language.strip():
+                      detected_language = language.strip()
+
+                  print(f"Using language code: {detected_language} for alignment")
+
+                  # First load the alignment model - don't pass model_name if it's empty
+                  # This will make it use the default model for the detected language
+                  if align_model and align_model.strip():
+                      alignment_model, align_metadata = whisperx.load_align_model(
+                          language_code=detected_language,
+                          device=device,
+                          model_name=align_model
+                      )
+                  else:
+                      alignment_model, align_metadata = whisperx.load_align_model(
+                          language_code=detected_language,
+                          device=device
+                      )
+
+                  # Then perform alignment
+                  result = whisperx.align(
+                      result["segments"],
+                      alignment_model,
+                      align_metadata,
+                      audio_path,
+                      device,
+                      return_char_alignments=return_char_alignments,
+                      interpolate_method=interpolate_method
+                  )
+
+              # Step 3: Perform diarization if enabled
+              if diarize:
+                  print("Performing diarization...")
+                  diarize_model = whisperx.diarize.DiarizationPipeline(
+                      device=device,
+                      use_auth_token=hf_token
+                  )
+                  diarize_segments = diarize_model(
+                      audio_path,
+                      min_speakers=min_speakers,
+                      max_speakers=max_speakers
+                  )
+                  result = whisperx.assign_word_speakers(diarize_segments, result)
+
+              # Format and save results
+              print("Processing complete.")
+
+              # Save outputs in multiple formats
+              output_files = []
+
+              # 1. JSON format
+              json_path = output_dir / f"{file_prefix}.json"
+              with open(json_path, "w", encoding="utf-8") as f:
+                  json.dump(result, f, ensure_ascii=False, indent=2)
+              output_files.append(str(json_path))
+
+              # 2. Plain text format
+              txt_path = output_dir / f"{file_prefix}.txt"
+              with open(txt_path, "w", encoding="utf-8") as f:
+                  oldspeaker = ''
+                  for segment in result["segments"]:
+                      if diarize and "speaker" in segment:
+                          # if still the same speaker, just print segment
+                          if segment['speaker'] == oldspeaker:
+                              f.write(f"{segment['text'].strip()}\n")
+                              continue
+                          # if new speaker, print speaker label
+                          f.write("\n")
+                          f.write(f"[{segment['speaker']}]: {segment['text'].strip()}\n")
                           oldspeaker = segment['speaker']
-                        f.write(f"\t\t\t<p class=\"segment speaker {segment['speaker']}\">{segment['text'].strip()}</p>\n")
-                    else:
-                        f.write(f"\t\t<p>{segment['text'].strip()}</p>\n")
-                f.write("\t\t</div>\t</body>\n</html>\n")
-            output_files.append(str(html_path))
+                      else:
+                          f.write(f"{segment['text'].strip()}\n")
+              output_files.append(str(txt_path))
 
-            # Read the TXT file content for display (no timestamps)
-            with open(txt_path, "r", encoding="utf-8") as f:
-                transcript = f.read()
+              # 3. SRT format (subtitle)
+              srt_path = output_dir / f"{file_prefix}.srt"
+              with open(srt_path, "w", encoding="utf-8") as f:
+                  for i, segment in enumerate(result["segments"], start=1):
+                      start_time = format_timestamp(segment["start"], always_include_hours=True, decimal_marker=",")
+                      end_time = format_timestamp(segment["end"], always_include_hours=True, decimal_marker=",")
 
-            # Return transcript and output files
-            return transcript, output_files
+                      text = segment["text"].strip().replace("-->", "->")
+                      if diarize and "speaker" in segment:
+                          text = f"[{segment['speaker']}]: {text}"
 
-        except Exception as e:
+                      f.write(f"{i}\n{start_time} --> {end_time}\n{text}\n\n")
+              output_files.append(str(srt_path))
+
+              # 4. VTT format (web subtitle)
+              vtt_path = output_dir / f"{file_prefix}.vtt"
+              with open(vtt_path, "w", encoding="utf-8") as f:
+                  f.write("WEBVTT\n\n")
+                  for i, segment in enumerate(result["segments"], start=1):
+                      start_time = format_timestamp(segment["start"], always_include_hours=False, decimal_marker=".")
+                      end_time = format_timestamp(segment["end"], always_include_hours=False, decimal_marker=".")
+
+                      text = segment["text"].strip().replace("-->", "->")
+                      if diarize and "speaker" in segment:
+                          text = f"[{segment['speaker']}]: {text}"
+
+                      f.write(f"{start_time} --> {end_time}\n{text}\n\n")
+              output_files.append(str(vtt_path))
+
+              # 5. HTML
+              html_path = output_dir / f"{file_prefix}.html"
+              css = """
+                body {
+                  color-scheme: light dark;
+                  color: #ffffffde;
+                  background-color: #242424;
+                }
+                
+                span.timestamp {
+                  font-family: monospace;
+                }
+                
+                div.segments {
+                  width: 90%;
+                }
+                
+                p.segment {
+                  display: flex;
+                  align-items: center;
+                  gap: 1rem;
+                  text-align: left;
+                }
+                
+                .speaker.speakerid {
+                  font-family: monospace;
+                }
+                
+                .speaker.SPEAKER_00 {
+                  color: #59ffa1;
+                }
+                
+                .speaker.SPEAKER_01 {
+                  color: #597aff;
+                }
+                
+                .speaker.SPEAKER_02 {
+                  color: #f04f4f;
+                }
+                
+                .speaker.SPEAKER_03 {
+                  color: #e29b16;
+                }
+                
+                .speaker.SPEAKER_04 {
+                  color: #16c5e2;
+                }
+                
+                .speaker.SPEAKER_05 {
+                  color: #8316e2;
+                }
+                
+                .speaker.SPEAKER_06 {
+                  color: #e216af;;
+                }
+                
+                .speaker.SPEAKER_07 {
+                  color: #16e29b;
+                }
+                
+                .speaker.SPEAKER_08 {
+                  color: #3fe216;
+                }
+                
+                .speaker.SPEAKER_09 {
+                  color: #9b16e2;
+                }
+                
+                .speaker.SPEAKER_10 {
+                  color: #16bae2;
+                }
+                
+                .speaker.SPEAKER_11 {
+                  color: #a9e216;
+                }
+                
+                .speaker.SPEAKER_12 {
+                  color: #1676e2;
+                }
+                
+                .speaker.SPEAKER_13 {
+                  color: #dcbeff;
+                }
+                
+                .speaker.SPEAKER_14 {
+                  color: #aaffc3;
+                }
+                
+                .speaker.SPEAKER_15 {
+                  color: #ffd8b1;
+                }
+                
+                .speaker.SPEAKER_16 {
+                  color: #fabed4;
+                }
+                
+                .speaker.SPEAKER_17 {
+                  color: #16e287;
+                }
+                
+                .speaker.SPEAKER_18 {
+                  color: #16bae2;
+                }
+                
+                .speaker.SPEAKER_19 {
+                  color: #a9a9a9;
+                }
+              """
+              with open(html_path, "w", encoding="utf-8") as f:
+                  f.write("<html>\n")
+                  f.write(f"\t<head>\t\t<style>{css}\t\t</style>\t</head>")
+                  f.write(f"\t<body>\n\t\t<div class=\"segments\">")
+                  oldspeaker = ''
+                  for segment in result["segments"]:
+
+                      if diarize and "speaker" in segment:
+                          if segment['speaker'] != oldspeaker:
+                            f.write(f"\t\t\t<br /><p class=\"speaker speakerid\">{segment['speaker']}:</p>\n")
+                            oldspeaker = segment['speaker']
+                          f.write(f"\t\t\t<p class=\"segment speaker {segment['speaker']}\">{segment['text'].strip()}</p>\n")
+                      else:
+                          f.write(f"\t\t<p>{segment['text'].strip()}</p>\n")
+                  f.write("\t\t</div>\t</body>\n</html>\n")
+              output_files.append(str(html_path))
+
+              # Read the TXT file content for display (no timestamps)
+              with open(txt_path, "r", encoding="utf-8") as f:
+                  transcript = f.read()
+              
+              all_output_files.extend(output_files)
+
+          except Exception as e:
             import traceback
             traceback.print_exc()
             return f"Error: {str(e)}", []
 
-    except Exception as e:
+      except Exception as e:
         import traceback
         traceback.print_exc()
         return f"Error: {str(e)}", []
+
+    return transcript, all_output_files
+
+
 
 def gradio_app():
     with gr.Blocks() as app:
@@ -474,7 +480,8 @@ def gradio_app():
         with gr.Column():
             # Input file
             #audio_input = gr.Audio(type="filepath", label="Upload Audio File")
-            file_input = gr.File(label="Upload Audio/Video File")
+            #file_input = gr.File(label="Upload Audio/Video File")
+            file_input = gr.Files(label="Upload Audio/Video Files")
 
             with gr.Accordion("Basic Options", open=True):
                 model = gr.Dropdown(
@@ -694,7 +701,7 @@ def gradio_app():
 
             # Output
             transcript_output = gr.Textbox(
-                label="Transcript",
+                label="Transcript preview",
                 lines=20
             )
 
