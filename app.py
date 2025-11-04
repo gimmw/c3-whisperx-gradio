@@ -7,6 +7,7 @@ import whisperx
 import subprocess
 import time
 from pathlib import Path
+from pathvalidate import sanitize_filename
 
 
 # Constants and defaults
@@ -169,7 +170,7 @@ def transcribe_audio(
       # Generate a unique timestamp for this run
 
       file_name = os.path.splitext(os.path.basename(input_file))[0]
-      file_prefix = f"transcript_{file_name}.{timestamp}"
+      file_prefix = sanitize_filename(f"transcript_{file_name}.{timestamp}")
 
       try:
           # for video input file, extract as audio
