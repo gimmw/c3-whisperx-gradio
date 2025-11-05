@@ -12,6 +12,7 @@ from pathvalidate import sanitize_filename
 
 # Constants and defaults
 DEFAULT_MODEL = "large-v3"
+DEFAULT_OUTPUT_FORMATS = ["txt"]
 OUTPUT_FORMAT_CHOICES = ["all", "txt", "html", "srt", "vtt", "tsv", "json", "aud"]
 COMPUTE_TYPE_CHOICES = ["float16", "float32", "int8"]
 INTERPOLATE_METHOD_CHOICES = ["nearest", "linear", "ignore"]
@@ -115,6 +116,7 @@ def transcribe_audio(
     device="cuda",
     compute_type="float16",
     batch_size=16,
+    output_formats=["txt"],
 
     # Alignment options
     align_model=None,
@@ -278,182 +280,187 @@ def transcribe_audio(
               output_files = []
 
               # 1. JSON format
-              json_path = output_dir / f"{file_prefix}.json"
-              with open(json_path, "w", encoding="utf-8") as f:
-                  json.dump(result, f, ensure_ascii=False, indent=2)
-              output_files.append(str(json_path))
+              if ("json" in output_formats or "all" in output_formats):
+                json_path = output_dir / f"{file_prefix}.json"
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(result, f, ensure_ascii=False, indent=2)
+                output_files.append(str(json_path))
 
               # 2. Plain text format
-              txt_path = output_dir / f"{file_prefix}.txt"
-              with open(txt_path, "w", encoding="utf-8") as f:
-                  oldspeaker = ''
-                  for segment in result["segments"]:
-                      if diarize and "speaker" in segment:
-                          # if still the same speaker, just print segment
-                          if segment['speaker'] == oldspeaker:
-                              f.write(f"{segment['text'].strip()}\n")
-                              continue
-                          # if new speaker, print speaker label
-                          f.write("\n")
-                          f.write(f"[{segment['speaker']}]: {segment['text'].strip()}\n")
-                          oldspeaker = segment['speaker']
-                      else:
-                          f.write(f"{segment['text'].strip()}\n")
-              output_files.append(str(txt_path))
+              if ("txt" in output_formats or "all" in output_formats):
+                txt_path = output_dir / f"{file_prefix}.txt"
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    oldspeaker = ''
+                    for segment in result["segments"]:
+                        if diarize and "speaker" in segment:
+                            # if still the same speaker, just print segment
+                            if segment['speaker'] == oldspeaker:
+                                f.write(f"{segment['text'].strip()}\n")
+                                continue
+                            # if new speaker, print speaker label
+                            f.write("\n")
+                            f.write(f"[{segment['speaker']}]: {segment['text'].strip()}\n")
+                            oldspeaker = segment['speaker']
+                        else:
+                            f.write(f"{segment['text'].strip()}\n")
+                output_files.append(str(txt_path))
 
               # 3. SRT format (subtitle)
-              srt_path = output_dir / f"{file_prefix}.srt"
-              with open(srt_path, "w", encoding="utf-8") as f:
-                  for i, segment in enumerate(result["segments"], start=1):
-                      start_time = format_timestamp(segment["start"], always_include_hours=True, decimal_marker=",")
-                      end_time = format_timestamp(segment["end"], always_include_hours=True, decimal_marker=",")
+              if ("srt" in output_formats or "all" in output_formats):
+                srt_path = output_dir / f"{file_prefix}.srt"
+                with open(srt_path, "w", encoding="utf-8") as f:
+                    for i, segment in enumerate(result["segments"], start=1):
+                        start_time = format_timestamp(segment["start"], always_include_hours=True, decimal_marker=",")
+                        end_time = format_timestamp(segment["end"], always_include_hours=True, decimal_marker=",")
 
-                      text = segment["text"].strip().replace("-->", "->")
-                      if diarize and "speaker" in segment:
-                          text = f"[{segment['speaker']}]: {text}"
+                        text = segment["text"].strip().replace("-->", "->")
+                        if diarize and "speaker" in segment:
+                            text = f"[{segment['speaker']}]: {text}"
 
-                      f.write(f"{i}\n{start_time} --> {end_time}\n{text}\n\n")
-              output_files.append(str(srt_path))
+                        f.write(f"{i}\n{start_time} --> {end_time}\n{text}\n\n")
+                output_files.append(str(srt_path))
 
               # 4. VTT format (web subtitle)
-              vtt_path = output_dir / f"{file_prefix}.vtt"
-              with open(vtt_path, "w", encoding="utf-8") as f:
-                  f.write("WEBVTT\n\n")
-                  for i, segment in enumerate(result["segments"], start=1):
-                      start_time = format_timestamp(segment["start"], always_include_hours=False, decimal_marker=".")
-                      end_time = format_timestamp(segment["end"], always_include_hours=False, decimal_marker=".")
+              if ("vtt" in output_formats or "all" in output_formats):
+                vtt_path = output_dir / f"{file_prefix}.vtt"
+                with open(vtt_path, "w", encoding="utf-8") as f:
+                    f.write("WEBVTT\n\n")
+                    for i, segment in enumerate(result["segments"], start=1):
+                        start_time = format_timestamp(segment["start"], always_include_hours=False, decimal_marker=".")
+                        end_time = format_timestamp(segment["end"], always_include_hours=False, decimal_marker=".")
 
-                      text = segment["text"].strip().replace("-->", "->")
-                      if diarize and "speaker" in segment:
-                          text = f"[{segment['speaker']}]: {text}"
+                        text = segment["text"].strip().replace("-->", "->")
+                        if diarize and "speaker" in segment:
+                            text = f"[{segment['speaker']}]: {text}"
 
-                      f.write(f"{start_time} --> {end_time}\n{text}\n\n")
-              output_files.append(str(vtt_path))
+                        f.write(f"{start_time} --> {end_time}\n{text}\n\n")
+                output_files.append(str(vtt_path))
 
               # 5. HTML
-              html_path = output_dir / f"{file_prefix}.html"
-              css = """
-                body {
-                  color-scheme: light dark;
-                  color: #ffffffde;
-                  background-color: #242424;
-                }
-                
-                span.timestamp {
-                  font-family: monospace;
-                }
-                
-                div.segments {
-                  width: 90%;
-                }
-                
-                p.segment {
-                  display: flex;
-                  align-items: center;
-                  gap: 1rem;
-                  text-align: left;
-                }
-                
-                .speaker.speakerid {
-                  font-family: monospace;
-                }
-                
-                .speaker.SPEAKER_00 {
-                  color: #59ffa1;
-                }
-                
-                .speaker.SPEAKER_01 {
-                  color: #597aff;
-                }
-                
-                .speaker.SPEAKER_02 {
-                  color: #f04f4f;
-                }
-                
-                .speaker.SPEAKER_03 {
-                  color: #e29b16;
-                }
-                
-                .speaker.SPEAKER_04 {
-                  color: #16c5e2;
-                }
-                
-                .speaker.SPEAKER_05 {
-                  color: #8316e2;
-                }
-                
-                .speaker.SPEAKER_06 {
-                  color: #e216af;;
-                }
-                
-                .speaker.SPEAKER_07 {
-                  color: #16e29b;
-                }
-                
-                .speaker.SPEAKER_08 {
-                  color: #3fe216;
-                }
-                
-                .speaker.SPEAKER_09 {
-                  color: #9b16e2;
-                }
-                
-                .speaker.SPEAKER_10 {
-                  color: #16bae2;
-                }
-                
-                .speaker.SPEAKER_11 {
-                  color: #a9e216;
-                }
-                
-                .speaker.SPEAKER_12 {
-                  color: #1676e2;
-                }
-                
-                .speaker.SPEAKER_13 {
-                  color: #dcbeff;
-                }
-                
-                .speaker.SPEAKER_14 {
-                  color: #aaffc3;
-                }
-                
-                .speaker.SPEAKER_15 {
-                  color: #ffd8b1;
-                }
-                
-                .speaker.SPEAKER_16 {
-                  color: #fabed4;
-                }
-                
-                .speaker.SPEAKER_17 {
-                  color: #16e287;
-                }
-                
-                .speaker.SPEAKER_18 {
-                  color: #16bae2;
-                }
-                
-                .speaker.SPEAKER_19 {
-                  color: #a9a9a9;
-                }
-              """
-              with open(html_path, "w", encoding="utf-8") as f:
-                  f.write("<html>\n")
-                  f.write(f"\t<head>\t\t<style>{css}\t\t</style>\t</head>")
-                  f.write(f"\t<body>\n\t\t<div class=\"segments\">")
-                  oldspeaker = ''
-                  for segment in result["segments"]:
+              if ("html" in output_formats or "all" in output_formats):
+                html_path = output_dir / f"{file_prefix}.html"
+                css = """
+                  body {
+                    color-scheme: light dark;
+                    color: #ffffffde;
+                    background-color: #242424;
+                  }
+                  
+                  span.timestamp {
+                    font-family: monospace;
+                  }
+                  
+                  div.segments {
+                    width: 90%;
+                  }
+                  
+                  p.segment {
+                    display: flex;
+                    align-items: center;
+                    gap: 1rem;
+                    text-align: left;
+                  }
+                  
+                  .speaker.speakerid {
+                    font-family: monospace;
+                  }
+                  
+                  .speaker.SPEAKER_00 {
+                    color: #59ffa1;
+                  }
+                  
+                  .speaker.SPEAKER_01 {
+                    color: #597aff;
+                  }
+                  
+                  .speaker.SPEAKER_02 {
+                    color: #f04f4f;
+                  }
+                  
+                  .speaker.SPEAKER_03 {
+                    color: #e29b16;
+                  }
+                  
+                  .speaker.SPEAKER_04 {
+                    color: #16c5e2;
+                  }
+                  
+                  .speaker.SPEAKER_05 {
+                    color: #8316e2;
+                  }
+                  
+                  .speaker.SPEAKER_06 {
+                    color: #e216af;;
+                  }
+                  
+                  .speaker.SPEAKER_07 {
+                    color: #16e29b;
+                  }
+                  
+                  .speaker.SPEAKER_08 {
+                    color: #3fe216;
+                  }
+                  
+                  .speaker.SPEAKER_09 {
+                    color: #9b16e2;
+                  }
+                  
+                  .speaker.SPEAKER_10 {
+                    color: #16bae2;
+                  }
+                  
+                  .speaker.SPEAKER_11 {
+                    color: #a9e216;
+                  }
+                  
+                  .speaker.SPEAKER_12 {
+                    color: #1676e2;
+                  }
+                  
+                  .speaker.SPEAKER_13 {
+                    color: #dcbeff;
+                  }
+                  
+                  .speaker.SPEAKER_14 {
+                    color: #aaffc3;
+                  }
+                  
+                  .speaker.SPEAKER_15 {
+                    color: #ffd8b1;
+                  }
+                  
+                  .speaker.SPEAKER_16 {
+                    color: #fabed4;
+                  }
+                  
+                  .speaker.SPEAKER_17 {
+                    color: #16e287;
+                  }
+                  
+                  .speaker.SPEAKER_18 {
+                    color: #16bae2;
+                  }
+                  
+                  .speaker.SPEAKER_19 {
+                    color: #a9a9a9;
+                  }
+                """
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write("<html>\n")
+                    f.write(f"\t<head>\t\t<style>{css}\t\t</style>\t</head>")
+                    f.write(f"\t<body>\n\t\t<div class=\"segments\">")
+                    oldspeaker = ''
+                    for segment in result["segments"]:
 
-                      if diarize and "speaker" in segment:
-                          if segment['speaker'] != oldspeaker:
-                            f.write(f"\t\t\t<br /><p class=\"speaker speakerid\">{segment['speaker']}:</p>\n")
-                            oldspeaker = segment['speaker']
-                          f.write(f"\t\t\t<p class=\"segment speaker {segment['speaker']}\">{segment['text'].strip()}</p>\n")
-                      else:
-                          f.write(f"\t\t<p>{segment['text'].strip()}</p>\n")
-                  f.write("\t\t</div>\t</body>\n</html>\n")
-              output_files.append(str(html_path))
+                        if diarize and "speaker" in segment:
+                            if segment['speaker'] != oldspeaker:
+                              f.write(f"\t\t\t<br /><p class=\"speaker speakerid\">{segment['speaker']}:</p>\n")
+                              oldspeaker = segment['speaker']
+                            f.write(f"\t\t\t<p class=\"segment speaker {segment['speaker']}\">{segment['text'].strip()}</p>\n")
+                        else:
+                            f.write(f"\t\t<p>{segment['text'].strip()}</p>\n")
+                    f.write("\t\t</div>\t</body>\n</html>\n")
+                output_files.append(str(html_path))
 
               # Read the TXT file content for display (no timestamps)
               with open(txt_path, "r", encoding="utf-8") as f:
@@ -518,6 +525,12 @@ def gradio_app():
                     maximum=64,
                     step=1,
                     label="Batch Size"
+                )
+                output_formats = gr.Dropdown(
+                    choices=OUTPUT_FORMAT_CHOICES,
+                    value=DEFAULT_OUTPUT_FORMATS,
+                    multiselect=True,
+                    label="Output Formats"
                 )
 
             with gr.Accordion("Alignment Options", open=False):
@@ -721,7 +734,7 @@ def gradio_app():
                     file_input,
 
                     # Basic options
-                    model, task, language, device, compute_type, batch_size,
+                    model, task, language, device, compute_type, batch_size, output_formats,
 
                     # Alignment options
                     align_model, no_align, interpolate_method, return_char_alignments,
