@@ -170,7 +170,7 @@ def transcribe_audio(
       # Generate a unique timestamp for this run
 
       file_name = os.path.splitext(os.path.basename(input_file))[0]
-      file_prefix = sanitize_filename(f"transcript_{file_name}.{timestamp}")
+      file_prefix = sanitize_filename((f"transcript_{file_name}.{timestamp}").replace(" ", "_"))
 
       try:
           # for video input file, extract as audio
@@ -776,7 +776,7 @@ if __name__ == "__main__":
                         help="The host or IP to bind to. If None, bind to localhost.") # None
     parser.add_argument("--server_port", type=int, default='7860', \
                         help="The port to bind to.") # 7860
-    parser.add_argument("--root_path", type=str, default='/', \
+    parser.add_argument("--root_path", type=str, default=None, \
                         help="Root path.")
     _args = parser.parse_args()
     app.queue()
